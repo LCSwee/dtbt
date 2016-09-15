@@ -1,0 +1,389 @@
+#!/usr/bin/env python
+
+# Device Tree Overlay Manager
+#
+#  Copyright (C) 2016 Intel Corporation.  All rights reserved.
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+#
+# This program is distributed in the hope it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# This script is a tool for applying and removing overlays under Linux
+# using the configfs overlay interface.
+#
+# This script is part of a rapidly evolving project and will likely be dropped
+# soon for a more complete solution.  But we need something for temporary use
+# and that is the intention here.
+#
+# The Linux kernel configfs interface for overlays is documented in the
+# kernel tree at linux/Documentation/devicetree/configfs-overlays.txt
+#
+# To apply an overlay, this script first creates an overlay directory (called
+# 'ovl_dir' here) below /sys/kernel/config/device-tree/overlays and then copy
+# the overlay to the dtbo file that appears in that directory.  The alternative
+# second step is to write the name of the dtbo file to the 'path' file in
+# the overlay directory.  The 'status' file in the overlay directory gives
+# status as to whether the overlay succeeded in being applied or not.
+#
+# In this script all ovl_dir's are numbered and have the name of the overlay
+# file such as '1-our_special_overlay.dtb'.  Although its doesn't really
+# keep track of dependencies between overlays, it at least allows the script to
+# keep track of the order in which overlays are applied.
+#
+
+import re
+import sys
+from os import listdir, mkdir, rmdir, path
+from shutil import copyfileobj
+from textwrap import dedent
+
+script_ver = '0.2'
+config_dto_path = '/sys/kernel/config/device-tree/overlays'
+dtbo_search_path = '/lib/firmware'
+
+# Split overlay directory name.  Field seperator is '-'
+# '12-foo-bar.dtb' -> ( 12, 'foo-bar.dtb' )
+def split_ovl_dir(ovl_dir):
+    try:
+        ovl = ovl_dir.rsplit('-')
+        num = int(ovl[0])
+        dtbo = '-'.join(ovl[1:])
+        if dtbo == '':
+            raise
+    except:
+        print "Overlay directory format is not as expected: %s" % ovl_dir
+        print "Is something other than this script applying overlays?"
+        print "Or configfs path is incorrect: %s" % config_dto_path
+        exit(1)
+    return (num, dtbo)
+
+# Returns integer
+# '12-foo-bar.dtb' -> 12
+def ovl_dir_to_num(ovl_dir):
+    (num, dtbo) = split_ovl_dir(ovl_dir)
+    return num
+
+# Returns string
+# '12-foo-bar.dtb' -> 'foo-bar.dtb'
+def ovl_dir_to_dtbo(ovl_dir):
+    (num, dtbo) = split_ovl_dir(ovl_dir)
+    return dtbo
+
+# Sorts list of overlay dirs in order applied
+def sort_overlays(ovls):
+    return sorted(ovls, key=ovl_dir_to_num)
+
+# Generate a overlay directory name for new overlay
+def generate_new_ovl_dir_name(dtbo):
+    ovl_dir = '%d-%s' % (get_max_overlay_num() + 1, dtbo)
+    return ovl_dir
+
+# Returns a list of all overlay dirs
+def list_ovl_dirs():
+    return listdir(config_dto_path)
+
+# Returns integer of highest overlay dir #
+def get_max_overlay_num():
+    ovls = sort_overlays(list_ovl_dirs())
+    # if no overlays are found, return 0
+    if len(ovls) == 0:
+        return 0
+    return ovl_dir_to_num(ovls[-1])
+
+# Given a dtbo, return the overlay dir for the most recent application of that dtbo
+def find_overlay_dir(dtbo):
+    # Get list of overlay dirs that match dtbo name
+    ovls = filter(re.compile('[0-9]*-' + dtbo).match, list_ovl_dirs())
+
+    # Sort matching overlays by number
+    ovls = sort_overlays(ovls)
+
+    if len(ovls) == 0:
+        return None
+
+    # Get most recently applied matching overlay
+    return ovls[-1]
+    
+# Find a file in a search path.  Return full path.
+def search_file(file_name, search_path):
+    for spath in search_path.split(','):
+        full_path = path.join(spath, file_name)
+        if path.isfile(full_path):
+            return full_path
+    return None
+
+# Find the dtbo file.  Returns full path.
+def find_dtbo_file(dtbo):
+    dtbo_full_path = search_file(dtbo, dtbo_search_path)
+    if dtbo_full_path == None:
+        print "ERROR file not found: %s" % (dtbo)
+        exit(1)
+    return dtbo_full_path
+
+# Returns status from configfs 'status' file ('applied' or ('unapplied')
+def configfs_status(ovl_dir):
+    cfs_full_path = path.join(ovl_dir, "status")
+    if not path.isfile(cfs_full_path):
+        print "ERROR file not found: %s" % (cfs_full_path)
+        exit(1)
+
+    # Read status file, removing trailing newlines, etc
+    f_status = open(cfs_full_path, "r")
+    status = f_status.read().rstrip()
+    f_status.close()
+
+    return status
+
+# Create a new overlay directory.  Returns the full path.
+def create_new_ovl_dir(dtbo):
+    ovl_dir = generate_new_ovl_dir_name(dtbo)
+    ovl_dir_full_path = path.join(config_dto_path, ovl_dir)
+
+    if path.exists(ovl_dir_full_path):
+        print "ERROR already exists: %s" % (ovl_dir_full_path)
+        exit(1)
+
+    try:
+        mkdir(ovl_dir_full_path)
+    except:
+        print "ERROR creating directory: %s" % (ovl_dir_full_path)
+        exit(1)
+
+    # check that 'path', 'dtbo', 'status' files exist
+    for foo in [ 'path', 'dtbo', 'status' ]:
+        cfs_full_path = path.join(ovl_dir_full_path, foo)
+        if not path.isfile(cfs_full_path):
+            print "ERROR file not found: %s" % (cfs_full_path)
+            exit(1)
+
+    return ovl_dir_full_path
+
+# Using configfs 'dtbo' file to apply dtbo
+def configfs_apply_dtbo(dtbo):
+    dtbo_file_full_path = find_dtbo_file(dtbo)
+
+    ovl_dir = create_new_ovl_dir(dtbo)
+    cfs_full_path = path.join(ovl_dir, 'dtbo')
+
+    # copy the dtbo file to the 'dtbo' configfs file
+    try:
+        f_dtbo = open(dtbo_file_full_path, "r")
+    except:
+        print "ERROR opening file %s" % (dtbo_file_full_path)
+        f_cfs.close()
+        exit(1)
+
+    try:
+        f_cfs = open(cfs_full_path, "w")
+    except:
+        print "ERROR opening file %s" % (cfs_full_path)
+        f_cfs.close()
+        f_dtbo.close()
+        exit(1)
+
+    try:
+        copyfileobj(f_dtbo, f_cfs, -1)
+    except:
+        print "ERROR copying %s to %s" % (dtbo_file_full_path, cfs_full_path)
+        f_cfs.close()
+        f_dtbo.close()
+        exit(1)
+
+    f_cfs.close()
+    f_dtbo.close()
+
+    return configfs_status(ovl_dir)
+
+# Use configfs 'path' file to apply dtbo using kernel firmware loader.
+# This limits dtbos to being located on the firmware search path.
+def configfs_apply_dtbo_path(dtbo):
+    ovl_dir = create_new_ovl_dir(dtbo)
+    cfs_full_path = path.join(ovl_dir, 'path')
+
+    # write the name of the dtbo file to the configfs 'path' file
+    try:
+        f = open(cfs_full_path, "w")
+    except:
+        print "ERROR opening file %s" % (cfs_full_path)
+        f.close()
+        exit(1)
+
+    try:
+        f.write(dtbo)
+    except:
+        print "ERROR writing \"%s\" to %s" % (dtbo, cfs_full_path)
+        f.close()
+        exit(1)
+
+    f.close()
+
+    return configfs_status(ovl_dir)
+
+def apply_dtbo(dtbo, method):
+    status = None
+    if method == 'path':
+        status = configfs_apply_dtbo_path(dtbo)
+    elif method == 'dtbo':
+        status = configfs_apply_dtbo(dtbo)
+    else:
+        print 'invalid overlay method'
+    return status
+
+def apply_dtbos(dtbos):
+    status = None
+    for dtbo in dtbos:
+        print "Applying dtbo: %s" % dtbo
+        status = apply_dtbo(dtbo, 'dtbo')
+        if status != "applied":
+            print "Overlay rejected: %s %s" % (dtbo, status)
+            return status
+    return status
+
+# Given a list of overlay dirs, sort it in revers order and
+# remove the overlays one at a time
+def configfs_remove_dtbos(ovl_dirs):
+    ovl_dirs = sort_overlays(ovl_dirs)
+    ovl_dirs.reverse()
+    for ovl_dir in ovl_dirs:
+        print "Removing dtbo: %s" % ovl_dir
+        ovl_dir = path.join(config_dto_path, ovl_dir)
+        if not path.isdir(ovl_dir):
+            print "ERROR dtbo not found in configfs: %s" % ovl_dir
+            exit(1)
+        try:
+            rmdir(ovl_dir)
+        except:
+            print "ERROR removing overlay directory: %s" % ovl_dir
+            exit(1)
+
+# Remove a list of overlays in reverse order of application
+def remove_dtbos(dtbos):
+    ovl_dirs = []
+    for dtbo in dtbos:
+        ovl_dir = find_overlay_dir(dtbo)
+        if ovl_dir == None:
+            print 'Overlay not found for %s' % dtbo
+            exit(1)
+        ovl_dirs.append(ovl_dir)
+    configfs_remove_dtbos(ovl_dirs)
+
+# Remove all overlays in reverse order
+def remove_all():
+    configfs_remove_dtbos(list_ovl_dirs())
+
+def list_overlays():
+    for ovl_dir in list_ovl_dirs():
+        ovl_dir_full_path = path.join(config_dto_path, ovl_dir)
+        if path.isdir(ovl_dir_full_path):
+            (num, dtbo) = split_ovl_dir(ovl_dir)
+            status = configfs_status(ovl_dir_full_path)
+            print "%d %s %s %s" % (num, dtbo, status, ovl_dir_full_path)
+
+def print_usage(this_script):
+    usage = """\
+    Usage: {name}
+
+     Apply an list of overlays in order: {name} -a dtbo[,dtbo[,dtbo...]]
+     Remove a list of overlays in order: {name} -r dtbo[,dtbo[,dtbo...]]
+     Remove all overlays in order:       {name} -r all
+     List currently applied dtbo's:      {name} -l
+     Help (this message):                {name} -h
+     Version:                            {name} --version
+
+    Common options:
+     -p path[:path[...]]: search path for dtbo files
+     -m configfs entry point for fpga
+
+    Notes:
+     -a, -r, -l, --version are mutually exclusive
+    """
+
+    print(dedent(usage.format(name=this_script)))
+
+#===============================================================================
+
+this_script = path.basename(sys.argv[0])
+args = sys.argv[1:]
+action = None
+
+if len(args) == 0 or '-h' in args:
+    print_usage(this_script)
+    exit(0)
+
+if '--version' in args:
+    print script_ver
+    exit(0)
+
+while len(args) > 0:
+    arg = args.pop(0)
+
+    if arg == '-l':
+        if action != None:
+            print '-a, -r, -l are mutually exclusive'
+            exit(1)
+        action = "list"
+
+    elif arg in {'-m', '-p'}:
+        if len(args) < 1:
+            print "error, need path"
+            exit(1)
+
+        if arg == '-m':
+            config_dto_path = args[0]
+            print 'Set configfs mount point to %s' % config_dto_path
+            
+        elif arg == '-p':
+            dtbo_search_path = args[0]
+            print 'Set dtbo search path to %s' % dtbo_search_path
+
+        args = args[1:]
+
+    elif arg in {'-a', '-r'}:
+        if action != None:
+            print '-a, -r, -l are mutually exclusive'
+            exit(1)
+
+        if len(args) < 1:
+            print "error, need a list of overlays"
+            exit(1)
+
+        dtbos = args[0].split(',')
+        args = args[1:]
+
+        if len(dtbos) == 1 and dtbos[0] == 'all':
+            action = "remove_all"
+        elif arg == '-a':
+            action = "apply"
+        elif arg == '-r':
+            action = "remove"
+
+    else:
+        print 'unknown parameter : %s' % arg
+        exit(1)
+
+if not path.isdir(config_dto_path):
+    print 'ERROR directory not found: %s' % config_dto_path
+    exit(1)
+
+if action == None:
+    print "ERROR need to specify one of '-a', '-r', or '-l'"
+    exit(1)
+
+if action == "list":
+    list_overlays()
+elif action == "apply":
+    apply_dtbos(dtbos)
+elif action == "remove":
+    remove_dtbos(dtbos)
+elif action == "remove_all":
+    remove_all()
+    
+exit(0)
