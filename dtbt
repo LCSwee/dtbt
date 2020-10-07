@@ -190,7 +190,7 @@ def configfs_apply_dtbo(dtbo):
         exit(1)
 
     try:
-        copyfileobj(f_dtbo, f_cfs, -1)
+        copyfileobj(f_dtbo, f_cfs)
     except:
         print("ERROR copying %s to %s" % (dtbo_file_full_path, cfs_full_path))
         f_cfs.close()
