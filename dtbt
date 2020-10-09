@@ -136,7 +136,7 @@ def configfs_status(ovl_dir):
         exit(1)
 
     # Read status file, removing trailing newlines, etc
-    f_status = open(cfs_full_path, "r")
+    f_status = open(cfs_full_path, "rb")
     status = f_status.read().rstrip()
     f_status.close()
 
@@ -175,14 +175,14 @@ def configfs_apply_dtbo(dtbo):
 
     # copy the dtbo file to the 'dtbo' configfs file
     try:
-        f_dtbo = open(dtbo_file_full_path, "r")
+        f_dtbo = open(dtbo_file_full_path, "rb")
     except:
         print("ERROR opening file %s" % (dtbo_file_full_path))
         f_cfs.close()
         exit(1)
 
     try:
-        f_cfs = open(cfs_full_path, "w")
+        f_cfs = open(cfs_full_path, "wb")
     except:
         print("ERROR opening file %s" % (cfs_full_path))
         f_cfs.close()
@@ -210,7 +210,7 @@ def configfs_apply_dtbo_path(dtbo):
 
     # write the name of the dtbo file to the configfs 'path' file
     try:
-        f = open(cfs_full_path, "w")
+        f = open(cfs_full_path, "wb")
     except:
         print("ERROR opening file %s" % (cfs_full_path))
         f.close()
