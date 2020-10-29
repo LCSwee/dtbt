@@ -136,7 +136,7 @@ def configfs_status(ovl_dir):
         exit(1)
 
     # Read status file, removing trailing newlines, etc
-    f_status = open(cfs_full_path, "rb")
+    f_status = open(cfs_full_path, "r")
     status = f_status.read().rstrip()
     f_status.close()
 
