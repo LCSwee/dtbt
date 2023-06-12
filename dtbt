@@ -131,6 +131,8 @@ def find_dtbo_file(dtbo):
 # Returns status from configfs 'status' file ('applied' or ('unapplied')
 def configfs_status(ovl_dir):
     cfs_full_path = path.join(ovl_dir, "status")
+    print("config_status")
+    print("cfs_full_path: %s" % (cfs_full_path))
     if not path.isfile(cfs_full_path):
         print("ERROR file not found: %s" % (cfs_full_path))
         exit(1)
@@ -140,6 +142,7 @@ def configfs_status(ovl_dir):
     status = f_status.read().rstrip()
     f_status.close()
 
+    print("status",status)
     return status
 
 # Create a new overlay directory.  Returns the full path.
@@ -169,12 +172,15 @@ def create_new_ovl_dir(dtbo):
 # Using configfs 'dtbo' file to apply dtbo
 def configfs_apply_dtbo(dtbo):
     dtbo_file_full_path = find_dtbo_file(dtbo)
-
+    print("debug jim %s" % (dtbo_file_full_path))
     ovl_dir = create_new_ovl_dir(dtbo)
+    print("debug jim ovl_dir %s" % (ovl_dir))
     cfs_full_path = path.join(ovl_dir, 'dtbo')
+    print("debug jim ovl_dir %s" % (cfs_full_path))
 
     # copy the dtbo file to the 'dtbo' configfs file
     try:
+        print("open dtbo_file_full_path")
         f_dtbo = open(dtbo_file_full_path, "rb")
     except:
         print("ERROR opening file %s" % (dtbo_file_full_path))
@@ -182,6 +188,7 @@ def configfs_apply_dtbo(dtbo):
         exit(1)
 
     try:
+        print("open cfs_full_path")
         f_cfs = open(cfs_full_path, "wb")
     except:
         print("ERROR opening file %s" % (cfs_full_path))
@@ -190,6 +197,7 @@ def configfs_apply_dtbo(dtbo):
         exit(1)
 
     try:
+        print("copyfileobj")
         copyfileobj(f_dtbo, f_cfs)
     except:
         print("ERROR copying %s to %s" % (dtbo_file_full_path, cfs_full_path))
@@ -197,6 +205,7 @@ def configfs_apply_dtbo(dtbo):
         f_dtbo.close()
         exit(1)
 
+    print("close")
     f_cfs.close()
     f_dtbo.close()
 
